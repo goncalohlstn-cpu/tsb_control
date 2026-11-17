@@ -1,0 +1,20 @@
+
+pid_node:
+  ros__parameters:
+    # Surge PID
+    kp_surge: 1.0
+    ki_surge: 0.2
+    kd_surge: 0.05
+
+    # Heading PID
+    kp_heading: 1.0
+    ki_heading: 0.1
+    kd_heading: 0.2
+
+    # Anti-windup
+    surge_integral_limit: 1.0
+    heading_integral_limit: 1.0
+
+    # Command saturation limits
+    max_surge_cmd: 0.15
+    max_yaw_rate_cmd: 1.0
