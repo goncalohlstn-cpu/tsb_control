@@ -23,20 +23,21 @@ public:
         ki_heading_ = this->declare_parameter<double>("ki_heading", 0.1);
         kd_heading_ = this->declare_parameter<double>("kd_heading", 0.2); 
         
-        // Limites de anti-windup
+        //Parametros de Limites de anti-windup
         surge_integral_limit_ = this->declare_parameter<double>(
         "surge_integral_limit", 1.0);
 
         heading_integral_limit_ = this->declare_parameter<double>(
         "heading_integral_limit", 1.0);
 
-        // Limites de saturacao dos comandos
+        //Parametros de Limites de saturacao dos comandos
         max_surge_cmd_ = this->declare_parameter<double>(
         "max_surge_cmd", 0.15);
 
         max_yaw_rate_cmd_ = this->declare_parameter<double>(
         "max_yaw_rate_cmd", 1.0);
         
+        // Subscribe to /tsb/surge
         surge_sub_ = this->create_subscription<std_msgs::msg::Float64>(
         "/tsb/surge",10,
         std::bind(&PIDNode::surge_callback, this, std::placeholders::_1)
@@ -44,27 +45,33 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "PID Node iniciado!");
 
+        // Subscribe to /tsb/heading
         heading_sub_ = this->create_subscription<std_msgs::msg::Float64>(
         "/tsb/heading",10,
         std::bind(&PIDNode::heading_callback, this, std::placeholders::_1)
         );
 
+        // Subscribe to /tsb/yaw_rate
         yaw_rate_sub_ = this->create_subscription<std_msgs::msg::Float64>(
         "/tsb/yaw_rate",10,
         std::bind(&PIDNode::yaw_rate_callback, this, std::placeholders::_1)
         );
 
+        // Subscribe to /tsb/reference
         reference_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
         "/tsb/reference",10,
         std::bind(&PIDNode::reference_callback,this,std::placeholders::_1)
         );
 
 
+        //========================================================================
+        //Publicar os comandos
         cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(
             "/cmd_vel", 10
         );
 
-
+        //========================================================================
+        // Cria um timer que executa control_callback() a cada 100 ms (10 Hz).
         control_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(100),
         std::bind(&PIDNode::control_callback, this)
