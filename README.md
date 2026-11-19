@@ -1,59 +1,89 @@
-
 # TSB Control — Autonomous Systems Recruitment
 
 ## Project Overview
 
-This project was developed for the second phase of the
-Técnico Solar Boat Autonomous Systems recruitment.
+This project was developed for the second phase of the Técnico Solar Boat Autonomous Systems recruitment.
 
-The objective is to implement a ROS 2 control system
-for a TurtleBot3 Burger robot using PID controllers
-for surge velocity and heading.
+The objective is to implement a ROS 2 control system for a TurtleBot3 Burger robot, using PID controllers for surge velocity and heading. An additional Line-of-Sight (LOS) guidance node generates references for continuous waypoint-based path following.
 
 The system includes:
-- Sensor processing using odometry and IMU data.
+
+- Sensor processing using odometry and IMU data, including planar position.
 - PID control of surge velocity and heading.
-- Anti-windup and command saturation.
-- Sensor timeout and input validation.
-- ROS 2 launch files and YAML parameter configuration.
+- LOS guidance along a closed, eight-waypoint loiter trajectory.
+- Anti-windup, command saturation, sensor timeout and input validation.
+- A ROS 2 launch file and YAML configuration for the **PID** controller. The LOS settings and waypoints are defined directly in C++.
 
 ## Architecture
 
-The control system consists of two ROS 2 nodes:
+The control system consists of **three ROS 2 nodes**:
 
-### Sensor Processing Node
+### 1. Sensor Processing Node
 
-The `sensor_processing_node` subscribes to odometry
-and IMU data from the TurtleBot3 simulation.
+The `sensor_processing_node` subscribes to `/odom` and `/imu` from the TurtleBot3 simulation. It extracts and publishes:
 
-It extracts and publishes:
-- Surge velocity from odometry.
-- Heading angle from the IMU quaternion.
-- Yaw rate from the IMU angular velocity.
+- Surge velocity from odometry (`/tsb/surge`).
+- Planar position, `[x, y]`, from odometry (`/tsb/position`).
+- Heading angle (yaw) from the IMU orientation quaternion (`/tsb/heading`).
+- Yaw rate from IMU angular velocity (`/tsb/yaw_rate`).
 
-### PID Node
+### 2. LOS Node
 
-The `pid_node` receives the processed sensor data
-and the desired surge velocity and heading.
+The `los_node` subscribes to `/tsb/position` and computes a desired heading based on the robot's cross-track error relative to the current path segment. It publishes the desired surge velocity and heading in `/tsb/reference` as `[v_d, psi_d]`.
 
-It implements two PID controllers:
-- Surge velocity control.
-- Heading control.
+The path is a **closed eight-waypoint polygon (an octagon)** approximating a circular loiter. Once the last segment has been followed, guidance returns to the first segment and continues indefinitely.
 
-The node publishes linear and angular velocity
-commands to `/cmd_vel`.
+The LOS calculation uses:
+
+```text
+chi_p = atan2(y_end - y_start, x_end - x_start)
+e     = -(x - x_start) * sin(chi_p) + (y - y_start) * cos(chi_p)
+psi_d = chi_p - atan2(e, lookahead_distance)
+```
+
+Here, `chi_p` is the path-segment direction and `e` is the signed cross-track error. The desired heading is wrapped to `[-pi, pi]` before publication.
+
+The node runs at **10 Hz**. It advances to the next segment when the robot is close enough to the current endpoint or has passed the end of the segment within the configured cross-track bound. It requires recent position data; when the position is unavailable or more than one second old, it publishes a zero surge reference while retaining the last heading reference.
+
+### 3. PID Node
+
+The `pid_node` receives the processed sensor data and the reference `[v_d, psi_d]` from the LOS node. It implements:
+
+- A surge PID controller, with desired-speed feedforward.
+- A heading controller with proportional and integral action, plus derivative damping based on the measured yaw rate.
+- Heading-error wrapping, integral clamping and output saturation.
+
+The node publishes `geometry_msgs/msg/Twist` commands to `/cmd_vel` at **10 Hz**.
+
+### Data Flow
+
+```text
+Gazebo / TurtleBot3
+   | /odom, /imu
+   v
+sensor_processing_node
+   |                        \
+   | /tsb/position           \ /tsb/surge, /tsb/heading, /tsb/yaw_rate
+   v                          v
+los_node -----------------> pid_node
+         /tsb/reference          |
+                                 | /cmd_vel
+                                 v
+                         Gazebo / TurtleBot3
+```
 
 ### ROS 2 Topics
 
 | Topic | Message Type | Description |
 |---|---|---|
-| /odom | nav_msgs/msg/Odometry | Robot odometry |
-| /imu | sensor_msgs/msg/Imu | Robot IMU data |
-| /tsb/surge | std_msgs/msg/Float64 | Measured surge velocity (m/s) |
-| /tsb/heading | std_msgs/msg/Float64 | Measured heading (rad) |
-| /tsb/yaw_rate | std_msgs/msg/Float64 | Measured yaw rate (rad/s) |
-| /tsb/reference | std_msgs/msg/Float64MultiArray | Desired surge and heading |
-| /cmd_vel | geometry_msgs/msg/Twist | Linear and angular velocity commands |
+| `/odom` | `nav_msgs/msg/Odometry` | Robot odometry: position and velocity |
+| `/imu` | `sensor_msgs/msg/Imu` | Robot orientation and angular velocity |
+| `/tsb/position` | `std_msgs/msg/Float64MultiArray` | Robot position `[x, y]` (m) |
+| `/tsb/surge` | `std_msgs/msg/Float64` | Measured surge velocity (m/s) |
+| `/tsb/heading` | `std_msgs/msg/Float64` | Measured heading (rad) |
+| `/tsb/yaw_rate` | `std_msgs/msg/Float64` | Measured yaw rate (rad/s) |
+| `/tsb/reference` | `std_msgs/msg/Float64MultiArray` | Desired `[surge velocity (m/s), heading (rad)]` |
+| `/cmd_vel` | `geometry_msgs/msg/Twist` | Linear (`linear.x`) and angular (`angular.z`) commands |
 
 ## Requirements
 
@@ -66,64 +96,36 @@ The project was developed and tested using:
 - TurtleBot3 Burger
 - Colcon build system
 
-The following ROS 2 packages are required:
+The ROS 2 dependencies include `rclcpp`, `std_msgs`, `geometry_msgs`, `nav_msgs`, `sensor_msgs`, `launch`, `launch_ros` and `ament_index_python`.
 
-- rclcpp
-- std_msgs
-- geometry_msgs
-- nav_msgs
-- sensor_msgs
-- launch
-- launch_ros
-- ament_index_python
-
-TurtleBot3 simulation packages must also be installed.
+TurtleBot3 simulation packages must also be installed, including `turtlebot3_gazebo`.
 
 ## Installation and Build
 
-### 1. Source ROS 2
+The `tsb_control` package must be located inside the `src` directory of a ROS 2 workspace (the examples below use `~/tsb_ws`).
 
 ```bash
 source /opt/ros/humble/setup.bash
-```
-
-### 2. Navigate to the workspace
-
-```bash
 cd ~/tsb_ws
-```
-
-The `tsb_control` package must be located inside
-the workspace's `src` directory.
-
-### 3. Build the package
-
-```bash
 colcon build --packages-select tsb_control --symlink-install
-```
-
-### 4. Source the workspace
-
-```bash
 source install/setup.bash
 ```
 
-### 5. Verify the installation
+Verify that the executables are installed:
 
 ```bash
-ros2 pkg list | grep tsb_control
+ros2 pkg executables tsb_control
 ```
 
-The package should appear in the output.
+The expected executables are `sensor_processing_node`, `pid_node` and `los_node`.
 
 ## Running the System
 
-The system can be tested using the TurtleBot3 Burger
-in Gazebo.
+**The control launch file does not start Gazebo or spawn the TurtleBot3.** Run the simulator separately.
 
-### 1. Start the Gazebo simulation
+### 1. Start Gazebo and TurtleBot3
 
-Open a terminal and execute:
+In terminal 1:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -131,220 +133,175 @@ export TURTLEBOT3_MODEL=burger
 ros2 launch turtlebot3_gazebo empty_world.launch.py
 ```
 
-Wait until the TurtleBot3 is spawned in Gazebo.
+Wait until the TurtleBot3 appears in Gazebo.
 
-### 2. Launch the control nodes
+### 2. Start the control and guidance nodes
 
-Open a second terminal and execute:
+In terminal 2:
 
 ```bash
 source ~/tsb_ws/install/setup.bash
 ros2 launch tsb_control control.launch.py
 ```
 
-This launch file starts:
-- sensor_processing_node
-- pid_node
+`control.launch.py` launches:
 
-It also loads the PID parameters from
-`config/pid_params.yaml`.
+- `sensor_processing_node`
+- `pid_node`, with `config/pid_params.yaml`
+- `los_node`, whose settings and waypoints are fixed in its C++ source code
 
-### 3. Publish a reference
+**No manual reference command is needed during the loiter test:** the LOS node continuously publishes `/tsb/reference`.
 
-Open a third terminal and execute:
+### 3. Monitor the system
+
+In terminal 3:
 
 ```bash
 source ~/tsb_ws/install/setup.bash
-ros2 topic pub --once /tsb/reference std_msgs/msg/Float64MultiArray "{data: [0.10, 0.0]}"
+ros2 node list
+ros2 topic list
+ros2 topic echo /tsb/position
 ```
 
-The reference vector contains:
-
-- data[0]: Desired surge velocity (m/s).
-- data[1]: Desired heading (rad).
-
-In this example, the desired surge velocity is
-0.10 m/s and the desired heading is 0 rad.
-
-### 4. Monitor the control commands
-
-To inspect the commands published by the PID node:
+Other useful diagnostics, run separately:
 
 ```bash
+ros2 topic echo /tsb/reference
 ros2 topic echo /cmd_vel
 ```
 
-The topic contains:
-- linear.x: Linear velocity command (m/s).
-- angular.z: Angular velocity command (rad/s).
+The `/tsb/reference` message contains two values:
 
-### 5. Stop the simulation
+- `data[0]`: desired surge velocity (m/s)
+- `data[1]`: desired heading (rad)
 
-Press Ctrl+C in the terminals running the
-control nodes and the Gazebo simulation.
+The `/cmd_vel` output uses `linear.x` for linear velocity and `angular.z` for angular velocity.
+
+### 4. Stop the simulation
+
+Press `Ctrl+C` in the terminals running the control nodes and Gazebo.
 
 ## Parameters and Configuration
 
-The PID controller parameters are defined in:
+### PID Parameters (YAML)
 
-`config/pid_params.yaml`
+The PID controller parameters are defined in `config/pid_params.yaml` and loaded by `control.launch.py` when the PID starts.
 
-The configuration file is automatically loaded by
-`control.launch.py` when the PID node starts.
+The following are the **defaults declared in `pid_node.cpp`**; values supplied by the YAML file take precedence.
 
-### PID Gains
+| Parameter | Source-code default | Description |
+|---|---:|---|
+| `kp_surge` | 1.0 | Surge proportional gain |
+| `ki_surge` | 0.2 | Surge integral gain |
+| `kd_surge` | 0.05 | Surge derivative gain |
+| `kp_heading` | 1.0 | Heading proportional gain |
+| `ki_heading` | 0.1 | Heading integral gain |
+| `kd_heading` | 0.2 | Heading derivative gain |
+| `surge_integral_limit` | 1.0 | Surge integral accumulator limit |
+| `heading_integral_limit` | 1.0 | Heading integral accumulator limit |
+| `max_surge_cmd` | 0.15 m/s | Maximum absolute commanded linear speed |
+| `max_yaw_rate_cmd` | 1.0 rad/s | Maximum absolute commanded angular velocity |
 
-| Parameter | Default Value | Description |
-|---|---|---|
-| kp_surge | 1.0 | Surge proportional gain |
-| ki_surge | 0.2 | Surge integral gain |
-| kd_surge | 0.05 | Surge derivative gain |
-| kp_heading | 1.0 | Heading proportional gain |
-| ki_heading | 0.1 | Heading integral gain |
-| kd_heading | 0.2 | Heading derivative gain |
-
-### Anti-Windup and Saturation
-
-| Parameter | Default Value | Description |
-|---|---|---|
-| surge_integral_limit | 1.0 | Surge integral accumulator limit |
-| heading_integral_limit | 1.0 | Heading integral accumulator limit |
-| max_surge_cmd | 0.15 | Maximum absolute linear velocity (m/s) |
-| max_yaw_rate_cmd | 1.0 | Maximum absolute angular velocity (rad/s) |
-
-### Modifying Parameters
-
-To modify a parameter:
-
-1. Open `config/pid_params.yaml`.
-2. Change the desired value.
-3. Save the file.
-4. Restart the control launch file.
-
-The parameters are loaded when the node starts,
-so modifying the YAML does not require recompiling
-the C++ source code.
-
-For example, to inspect a parameter:
+To modify PID parameters, edit `config/pid_params.yaml`, save the file and restart the control launch. For example, parameters can be inspected using:
 
 ```bash
 ros2 param get /pid_node kp_surge
-```
-
-To list all available parameters:
-
-```bash
 ros2 param list /pid_node
 ```
 
+### LOS Settings (fixed in C++)
+
+The LOS node does **not** declare ROS parameters and does **not** require a LOS YAML configuration file. Its settings are defined in `src/los_node.cpp`:
+
+| Setting | Value | Description |
+|---|---:|---|
+| `lookahead_` | 0.70 m | LOS lookahead distance |
+| `desired_speed_` | 0.10 m/s | Desired surge speed |
+| `waypoint_tolerance_` | 0.20 m | Waypoint acceptance radius |
+| Update period | 100 ms | Guidance update period (10 Hz) |
+| Position timeout | 1 s | Maximum allowed age of position data |
+
+The eight waypoints, defined in the odometry coordinate frame, are:
+
+| Waypoint | x (m) | y (m) |
+|---|---:|---:|
+| P1 | 0.000 | 0.000 |
+| P2 | 0.439 | -1.061 |
+| P3 | 1.500 | -1.500 |
+| P4 | 2.561 | -1.061 |
+| P5 | 3.000 | 0.000 |
+| P6 | 2.561 | 1.061 |
+| P7 | 1.500 | 1.500 |
+| P8 | 0.439 | 1.061 |
+
+They approximate a circle of radius **1.5 m**, centred at **(1.5, 0.0) m**. The path proceeds from P1 to P2 and so on, then from P8 to P1, continuously. The sequence is counter-clockwise as viewed from above in the standard x-right, y-up coordinate frame.
+
+Changing the LOS settings or waypoints requires editing `src/los_node.cpp` and rebuilding the package.
+
 ## Testing and Validation
 
-The control system was implemented and tested using
-the TurtleBot3 Burger in Gazebo Classic.
+Tests were performed with TurtleBot3 Burger in Gazebo Classic using the Empty World environment, to avoid obstacles during controller and guidance evaluation.
 
-The Empty World environment was selected to evaluate
-the controllers without interference from obstacles.
+### 1. Node Communication and Sensor Processing
 
-### 1. Node Communication
-
-Both ROS 2 nodes were successfully launched using
-`control.launch.py`.
-
-The following commands can be used to verify
-the system:
+The nodes were started together using `control.launch.py`. Sensor processing publishes surge, heading, yaw rate and the added planar position topic. Communication can be checked using:
 
 ```bash
 ros2 node list
-ros2 topic list
-```
-
-Processed sensor data can be monitored using:
-
-```bash
 ros2 topic echo /tsb/surge
 ros2 topic echo /tsb/heading
 ros2 topic echo /tsb/yaw_rate
+ros2 topic echo /tsb/position
 ```
+
+The position publisher was also tested independently by sending a known `/odom` position and checking that `/tsb/position` reproduced its `[x, y]` values.
 
 ### 2. PID Control
 
-The controllers were tested by publishing desired
-surge velocity and heading references.
+The PID controller computes commands at 10 Hz. The implementation includes surge reference feedforward, wrapped heading error, derivative damping based on measured yaw rate, integral clamping and output saturation.
 
-Example:
+For a **manual PID reference test**, the LOS node must not be running, since it otherwise also publishes to `/tsb/reference`. With the LOS stopped and the sensor and PID nodes running, an example command is:
 
 ```bash
 ros2 topic pub --once /tsb/reference std_msgs/msg/Float64MultiArray "{data: [0.10, 0.0]}"
 ```
 
-The PID node computes the control commands at
-a frequency of 10 Hz and publishes them to `/cmd_vel`.
+### 3. LOS Guidance and Continuous Loiter
 
-The implementation includes:
-- Surge PID control with reference feedforward.
-- Heading PID control with angular error wrapping.
-- Derivative action using measured yaw rate for heading.
-- Integral anti-windup limits.
-- Linear and angular command saturation.
+The LOS node was compiled and initially tested by publishing a simulated position to `/tsb/position` and observing its output in `/tsb/reference`.
 
-### 3. Safety Mechanisms
+In the integrated Gazebo test, the TurtleBot3 was observed following an **approximately octagonal path and repeating the circuit continuously**. This demonstrates end-to-end communication from sensor processing through LOS guidance and PID control to `/cmd_vel`.
 
-The PID node includes several safety mechanisms:
+The observed repeated motion is a functional test. Quantitative path-following accuracy (for example, RMS cross-track error) has not been measured.
 
-**Input Validation**
+### 4. Safety Mechanisms
 
-Non-finite sensor values and reference values
-are rejected. The reference vector must contain
-exactly two values.
+**Input validation:** The PID rejects non-finite sensor values or reference values, and expects exactly two reference values. The LOS node rejects invalid position messages.
 
-**Sensor Timeout**
+**Sensor timeout:** If the PID does not receive updated surge, heading or yaw-rate data for over one second, it publishes a zero `Twist` and suspends normal control.
 
-If sensor data is not updated for more than
-1 second, the controller publishes a zero
-velocity command and suspends normal control.
+**LOS position timeout:** If the LOS loses recent position data, it publishes zero desired surge speed and retains the last desired heading. This does not necessarily imply a completely zero `/cmd_vel`, since the PID may still command an angular correction.
 
-**Command Saturation**
+**Command saturation:** The PID limits the absolute commanded linear speed and angular velocity according to its configured limits.
 
-Linear velocity commands are limited to
-+/- 0.15 m/s.
+**Anti-windup:** The surge and heading integral accumulators are clamped to configured bounds.
 
-Angular velocity commands are limited to
-+/- 1.0 rad/s.
+### 5. PID Parameter Configuration
 
-**Anti-Windup**
-
-The accumulated integral error is limited
-to prevent excessive integral growth.
-
-### 4. Parameter Configuration
-
-The ROS 2 parameters were tested using:
+The ROS 2 parameter interface was checked using:
 
 ```bash
 ros2 param list /pid_node
 ros2 param get /pid_node kp_surge
 ```
 
-YAML parameter loading was verified by
-temporarily modifying a gain and restarting
-the control nodes.
+YAML parameter loading was previously tested by changing a gain, restarting the control nodes, and restoring the original configuration.
 
-The original parameter values were restored
-after the test.
+## Known Limitations
 
-### 5. Known Limitations
-
-**Surge Oscillation**
-
-Oscillatory behaviour was observed in the
-surge velocity controller during simulation.
-
-The PID gains have not been further tuned,
-as fine-tuning is not required for this project.
-
-**Reference Timeout**
-
-The current implementation does not include
-a reference timeout. The last valid reference
-remains active until replaced or the node stops.
-
+- **Surge oscillation:** Oscillatory behaviour was observed during earlier surge controller tests. The PID gains have not been fine-tuned further.
+- **Reference timeout:** The PID does not check the age of `/tsb/reference`. If the LOS node stops while sensor data continues, the last valid reference can remain active. This is distinct from the PID's sensor timeout.
+- **Polygonal loiter:** The guidance follows eight straight segments, not a mathematically exact circle. Tracking errors can round or distort the observed corners.
+- **Fixed LOS configuration:** Waypoints and LOS settings are hard-coded, so changing the trajectory requires editing C++ and rebuilding.
+- **Coordinate frames:** The LOS assumes the position and heading used for guidance are consistent with the odometry reference frame. Frame alignment has not been independently verified.
+- **Quantitative accuracy:** The repeated loiter was observed visually in Gazebo; no quantitative path-error metrics or controller tuning study have been included.
