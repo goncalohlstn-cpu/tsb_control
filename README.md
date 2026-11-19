@@ -10,9 +10,9 @@ The system includes:
 
 - Sensor processing using odometry and IMU data, including planar position.
 - PID control of surge velocity and heading.
-- LOS guidance along a closed, eight-waypoint loiter trajectory.
+- LOS guidance along a closed loiter trajectory with configurable initial waypoints and live waypoint updates.
 - Anti-windup, command saturation, sensor timeout and input validation.
-- A ROS 2 launch file and YAML configuration for the **PID** controller. The LOS settings and waypoints are defined directly in C++.
+- ROS 2 launch files and YAML configuration for the PID controller and initial LOS waypoints.
 
 ## Architecture
 
@@ -29,9 +29,9 @@ The `sensor_processing_node` subscribes to `/odom` and `/imu` from the TurtleBot
 
 ### 2. LOS Node
 
-The `los_node` subscribes to `/tsb/position` and computes a desired heading based on the robot's cross-track error relative to the current path segment. It publishes the desired surge velocity and heading in `/tsb/reference` as `[v_d, psi_d]`.
+The `los_node` subscribes to `/tsb/position` and `/tsb/waypoints` and computes a desired heading based on the robot's cross-track error relative to the current path segment. It publishes the desired surge velocity and heading in `/tsb/reference` as `[v_d, psi_d]`.
 
-The path is a **closed eight-waypoint polygon (an octagon)** approximating a circular loiter. Once the last segment has been followed, guidance returns to the first segment and continues indefinitely.
+The initial path (loaded from `config/los_params.yaml`) is a **closed eight-waypoint polygon (an octagon)** approximating a circular loiter. When a valid new waypoint vector is received on `/tsb/waypoints`, it replaces the active path and guidance restarts at its first segment. Once the final segment has been followed, guidance returns to the first segment and continues indefinitely. Invalid waypoint vectors are rejected while the previous path remains active.
 
 The LOS calculation uses:
 
@@ -79,6 +79,7 @@ los_node -----------------> pid_node
 | `/odom` | `nav_msgs/msg/Odometry` | Robot odometry: position and velocity |
 | `/imu` | `sensor_msgs/msg/Imu` | Robot orientation and angular velocity |
 | `/tsb/position` | `std_msgs/msg/Float64MultiArray` | Robot position `[x, y]` (m) |
+| `/tsb/waypoints` | `std_msgs/msg/Float64MultiArray` | Replacement path `[x0, y0, x1, y1, ...]` (m) |
 | `/tsb/surge` | `std_msgs/msg/Float64` | Measured surge velocity (m/s) |
 | `/tsb/heading` | `std_msgs/msg/Float64` | Measured heading (rad) |
 | `/tsb/yaw_rate` | `std_msgs/msg/Float64` | Measured yaw rate (rad/s) |
@@ -148,7 +149,7 @@ ros2 launch tsb_control control.launch.py
 
 - `sensor_processing_node`
 - `pid_node`, with `config/pid_params.yaml`
-- `los_node`, whose settings and waypoints are fixed in its C++ source code
+- `los_node`, with initial waypoints loaded from `config/los_params.yaml`
 
 **No manual reference command is needed during the loiter test:** the LOS node continuously publishes `/tsb/reference`.
 
@@ -209,9 +210,9 @@ ros2 param get /pid_node kp_surge
 ros2 param list /pid_node
 ```
 
-### LOS Settings (fixed in C++)
+### LOS Settings and Waypoints
 
-The LOS node does **not** declare ROS parameters and does **not** require a LOS YAML configuration file. Its settings are defined in `src/los_node.cpp`:
+The lookahead, desired speed, and waypoint tolerance are **fixed in `src/los_node.cpp`**. The initial waypoint vector is a ROS 2 parameter, loaded from `config/los_params.yaml` by `control.launch.py` when the node starts:
 
 | Setting | Value | Description |
 |---|---:|---|
@@ -236,7 +237,15 @@ The eight waypoints, defined in the odometry coordinate frame, are:
 
 They approximate a circle of radius **1.5 m**, centred at **(1.5, 0.0) m**. The path proceeds from P1 to P2 and so on, then from P8 to P1, continuously. The sequence is counter-clockwise as viewed from above in the standard x-right, y-up coordinate frame.
 
-Changing the LOS settings or waypoints requires editing `src/los_node.cpp` and rebuilding the package.
+To change the **initial route**, edit `config/los_params.yaml` (flattened `[x0, y0, x1, y1, ...]` coordinates), then restart the control launch. With `--symlink-install`, this usually does not require recompiling; rebuild if the installed configuration is not updated. The source code provides the original eight points as a fallback when starting the LOS without a YAML override.
+
+To replace the route **while the nodes are running**, publish at least three `[x, y]` pairs with finite coordinates and no consecutive repeated points. For example, send a square:
+
+```bash
+ros2 topic pub --once /tsb/waypoints std_msgs/msg/Float64MultiArray "{data: [0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0]}"
+```
+
+This replaces the active route immediately and resets guidance to segment P1 → P2. The final waypoint connects to the first for continuous loiter. Coordinates use the same odometry reference frame; changing routes while moving may produce a sharp turn. To recover the original YAML path, restart the launch (or publish the original eight points). The `waypoints` ROS parameter is **read only at startup** by this implementation; for live changes use `/tsb/waypoints`, not `ros2 param set`.
 
 ## Testing and Validation
 
@@ -268,15 +277,15 @@ ros2 topic pub --once /tsb/reference std_msgs/msg/Float64MultiArray "{data: [0.1
 
 ### 3. LOS Guidance and Continuous Loiter
 
-The LOS node was compiled and initially tested by publishing a simulated position to `/tsb/position` and observing its output in `/tsb/reference`.
+The previous hard-coded loiter version was compiled and initially tested by publishing a simulated position to `/tsb/position` and observing its output in `/tsb/reference`.
 
 In the integrated Gazebo test, the TurtleBot3 was observed following an **approximately octagonal path and repeating the circuit continuously**. This demonstrates end-to-end communication from sensor processing through LOS guidance and PID control to `/cmd_vel`.
 
-The observed repeated motion is a functional test. Quantitative path-following accuracy (for example, RMS cross-track error) has not been measured.
+The observed repeated motion is a functional test of the **earlier hard-coded loiter version**. After adding YAML-based waypoints and the new waypoint topic, repeat the Gazebo loiter test, verify the initial parameter using `ros2 param get /los_node waypoints`, and publish an alternate trajectory on `/tsb/waypoints` to validate runtime switching. These additional checks must be performed before claiming the new version was tested. Quantitative path-following accuracy (for example, RMS cross-track error) has not been measured.
 
 ### 4. Safety Mechanisms
 
-**Input validation:** The PID rejects non-finite sensor values or reference values, and expects exactly two reference values. The LOS node rejects invalid position messages.
+**Input validation:** The PID rejects non-finite sensor values or reference values, and expects exactly two reference values. The LOS node rejects invalid position messages and malformed waypoint vectors (fewer than three pairs, odd-length vectors, non-finite coordinates, or consecutive duplicate points).
 
 **Sensor timeout:** If the PID does not receive updated surge, heading or yaw-rate data for over one second, it publishes a zero `Twist` and suspends normal control.
 
@@ -301,7 +310,7 @@ YAML parameter loading was previously tested by changing a gain, restarting the 
 
 - **Surge oscillation:** Oscillatory behaviour was observed during earlier surge controller tests. The PID gains have not been fine-tuned further.
 - **Reference timeout:** The PID does not check the age of `/tsb/reference`. If the LOS node stops while sensor data continues, the last valid reference can remain active. This is distinct from the PID's sensor timeout.
-- **Polygonal loiter:** The guidance follows eight straight segments, not a mathematically exact circle. Tracking errors can round or distort the observed corners.
-- **Fixed LOS configuration:** Waypoints and LOS settings are hard-coded, so changing the trajectory requires editing C++ and rebuilding.
+- **Polygonal loiter:** The default guidance follows eight straight segments, not a mathematically exact circle. New paths follow the supplied straight segments; tracking errors can round or distort corners.
+- **LOS configuration:** The lookahead, speed and waypoint tolerance remain fixed in C++. Initial waypoints are configured via YAML; a replacement trajectory can be received at runtime via `/tsb/waypoints`.
 - **Coordinate frames:** The LOS assumes the position and heading used for guidance are consistent with the odometry reference frame. Frame alignment has not been independently verified.
 - **Quantitative accuracy:** The repeated loiter was observed visually in Gazebo; no quantitative path-error metrics or controller tuning study have been included.

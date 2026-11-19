@@ -1,4 +1,3 @@
-
 import os
 
 from launch import LaunchDescription
@@ -7,12 +6,8 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-
-    # Localizar o diretorio de instalacao do package
     package_dir = get_package_share_directory('tsb_control')
-
-    # Construir o caminho para o ficheiro YAML
-    pid_config = os.path.join(package_dir, 'config', 'pid_params.yaml')
+    config_file = os.path.join(package_dir, 'config', 'control_params.yaml')
 
     return LaunchDescription([
         Node(
@@ -21,19 +16,18 @@ def generate_launch_description():
             name='sensor_processing_node',
             output='screen'
         ),
-
         Node(
             package='tsb_control',
             executable='pid_node',
             name='pid_node',
             output='screen',
-            parameters=[pid_config]
+            parameters=[config_file]
         ),
-
         Node(
             package='tsb_control',
             executable='los_node',
             name='los_node',
-            output='screen'
+            output='screen',
+            parameters=[config_file]
         )
     ])

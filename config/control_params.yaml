@@ -18,3 +18,16 @@ pid_node:
     # Command saturation limits
     max_surge_cmd: 0.15
     max_yaw_rate_cmd: 1.0
+
+los_node:
+  ros__parameters:
+    waypoints: [
+      0.0, 0.0,
+      0.439, -1.061,
+      1.5, -1.5,
+      2.561, -1.061,
+      3.0, 0.0,
+      2.561, 1.061,
+      1.5, 1.5,
+      0.439, 1.061
+    ]
