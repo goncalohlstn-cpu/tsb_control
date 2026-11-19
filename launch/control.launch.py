@@ -28,5 +28,12 @@ def generate_launch_description():
             name='pid_node',
             output='screen',
             parameters=[pid_config]
+        ),
+
+        Node(
+            package='tsb_control',
+            executable='los_node',
+            name='los_node',
+            output='screen'
         )
     ])

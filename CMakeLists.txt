@@ -37,9 +37,19 @@ ament_target_dependencies(pid_node
   geometry_msgs
 )
 
+# LOS node
+add_executable(los_node src/los_node.cpp)
+target_compile_features(los_node PUBLIC cxx_std_17)
+
+ament_target_dependencies(los_node
+  rclcpp
+  std_msgs
+)
+
 install(TARGETS
   sensor_processing_node
   pid_node
+  los_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

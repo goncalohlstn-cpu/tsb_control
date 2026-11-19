@@ -6,6 +6,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 
 class SensorProcessingNode : public rclcpp::Node
 {
@@ -13,7 +14,8 @@ public:
     SensorProcessingNode() : Node("sensor_processing_node")
     {
         //============================================================================================
-        //Isto cria 3 publisher que envia mensagens para os tópicos /tsb/surge  /tsb/heading /tsb/yaw_rate
+        //Isto cria 4 publisher que envia mensagens para os tópicos /tsb/surge  /tsb/heading /tsb/yaw_rate
+        //e /tsb/position
         surge_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             "/tsb/surge", 10
         );
@@ -22,6 +24,9 @@ public:
         );
         yaw_rate_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             "/tsb/yaw_rate", 10
+        );
+        position_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+            "/tsb/position", 10
         );
         //============================================================================================
 
@@ -40,7 +45,16 @@ public:
 
                 surge_pub_->publish(surge_msg);
                 //======================================================================================
+                // Extrair a posicao do TurtleBot
+                double x = msg->pose.pose.position.x;
+                double y = msg->pose.pose.position.y;
 
+                // Criar mensagem com as coordenadas [x, y]
+                std_msgs::msg::Float64MultiArray position_msg;
+                position_msg.data = {x, y};
+
+                // Publicar a posicao
+                position_pub_->publish(position_msg);
                 RCLCPP_INFO_THROTTLE(
                     this->get_logger(),
                     *this->get_clock(),
@@ -97,6 +111,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr surge_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr heading_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_rate_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr position_pub_;
 };
 
 int main(int argc, char ** argv)
