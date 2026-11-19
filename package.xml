@@ -4,9 +4,10 @@
   <name>tsb_control</name>
   <version>0.0.0</version>
  <description>
-  ROS 2 package for TurtleBot3 motion control, including sensor processing,
-  PID controllers for surge velocity and heading, and configurable parameters.
-  </description>
+  ROS 2 package for TurtleBot3 motion control, including sensor
+  processing, PID controllers for surge velocity and heading,
+  and Line-of-Sight (LOS) guidance for continuous loiter.
+</description>
   
   <maintainer email="goncalo@todo.todo">goncalo</maintainer>
   <license>Apache-2.0</license>
